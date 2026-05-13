@@ -20,6 +20,9 @@ import {
 import { DEFAULT_KIMI_LOCAL_MODEL } from "../index.js";
 import { parseKimiOutput, isKimiUnknownSessionError, extractSessionId, extractAssistantText, type KimiOutputEvent } from "./parse.js";
 
+const KIMI_LANGUAGE_POLICY =
+  "Language policy: responda em português brasileiro em mensagens de usuário, comentários, documentos, handoffs e resumos. Preserve nomes de APIs, comandos, paths, logs, código, payloads JSON e texto citado no idioma original quando necessário. Se uma skill ou instrução de ferramenta pedir inglês, esta regra de idioma prevalece para a prosa natural.";
+
 async function buildPrompt(
   agent: AdapterExecutionContext["agent"],
   config: Record<string, unknown>,
@@ -49,7 +52,7 @@ async function buildPrompt(
     run: {},
     context: context as Record<string, unknown>,
   });
-  return joinPromptSections([instructionsPrefix, renderedPrompt]);
+  return joinPromptSections([KIMI_LANGUAGE_POLICY, instructionsPrefix, renderedPrompt]);
 }
 
 function buildArgs(config: Record<string, unknown>, sessionId: string | null, prompt: string, skillsDir?: string): string[] {
@@ -142,31 +145,44 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await onMeta(meta);
     }
 
-    const kimiOnLog = (kind: "stdout" | "stderr", line: string): Promise<void> => {
-      const trimmed = line.trim();
-      if (!trimmed) return Promise.resolve();
-      if (kind === "stdout") {
-        const parsed = parseSingleKimiEvent(trimmed);
-        if (parsed) {
-          if (parsed.kind === "thinking") return onLog("stdout", `💭 ${parsed.text ?? ""}`);
-          if (parsed.kind === "assistant") return onLog("stdout", parsed.text ?? "");
-          if (parsed.kind === "tool_call") {
-            onLog("stdout", `🛠 ${parsed.name ?? ""}`);
-            return onLog("stdout", JSON.stringify(parsed.input));
-          }
-          if (parsed.kind === "tool_result") {
-            return onLog("stdout", parsed.text ? `📋 ${parsed.text.slice(0, 200)}` : "");
-          }
-          if (parsed.kind === "stderr") return onLog("stderr", parsed.text ?? "");
-          if (parsed.kind === "init") return Promise.resolve();
-          if (parsed.kind === "result") return Promise.resolve();
-          return onLog("stdout", trimmed);
+    const kimiOnLog = async (kind: "stdout" | "stderr", chunk: string): Promise<void> => {
+      const lines = chunk.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      if (lines.length === 0) return;
+
+      for (const line of lines) {
+        if (kind !== "stdout") {
+          await onLog(kind, line);
+          continue;
+        }
+
+        const parsed = parseSingleKimiEvent(line);
+        if (!parsed) {
+          await onLog("stdout", line);
+          continue;
+        }
+        if (parsed.kind === "thinking") {
+          await onLog("stdout", `Pensando: ${parsed.text ?? ""}`);
+          continue;
+        }
+        if (parsed.kind === "assistant") {
+          await onLog("stdout", parsed.text ?? "");
+          continue;
+        }
+        if (parsed.kind === "tool_call") {
+          await onLog("stdout", `Usando ferramenta: ${parsed.name ?? "desconhecida"}`);
+          continue;
+        }
+        if (parsed.kind === "tool_result") {
+          if (parsed.text) await onLog("stdout", `Resultado da ferramenta: ${parsed.text}`);
+          continue;
+        }
+        if (parsed.kind === "stderr") {
+          await onLog("stderr", parsed.text ?? "");
         }
       }
-      return onLog(kind, trimmed);
     };
 
-    function parseSingleKimiEvent(raw: string): { kind: string; text?: string; name?: string; input?: unknown } | null {
+    function parseSingleKimiEvent(raw: string): { kind: string; text?: string; name?: string } | null {
       try {
         const event = JSON.parse(raw);
         if (event.type === "init") return { kind: "init" };
@@ -179,21 +195,32 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           if (asstText) return { kind: "assistant", text: asstText };
           if (Array.isArray(event.tool_calls) && event.tool_calls.length > 0) {
             const tc = event.tool_calls[0];
-            let input: unknown = {};
-            try { input = tc.function?.arguments ? JSON.parse(tc.function.arguments) : {}; } catch {}
-            return { kind: "tool_call", name: tc.function?.name ?? tc.type ?? "unknown", input };
+            return { kind: "tool_call", name: tc.function?.name ?? tc.type ?? "unknown" };
           }
         }
         if (event.role === "tool") {
-          const text = Array.isArray(event.content)
-            ? event.content.map((c: { text?: string }) => c.text ?? "").join("")
-            : typeof event.content === "string" ? event.content : "";
+          const text = summarizeKimiToolContent(event.content);
           return { kind: "tool_result", text };
         }
         return null;
       } catch {
         return null;
       }
+    }
+
+    function summarizeKimiToolContent(content: unknown): string {
+      const text = Array.isArray(content)
+        ? content.map((entry) => (
+            typeof entry === "object" && entry !== null && typeof (entry as { text?: unknown }).text === "string"
+              ? (entry as { text: string }).text
+              : ""
+          )).filter(Boolean).join("\n")
+        : typeof content === "string" ? content : "";
+      const systemMatch = text.match(/<system>([\s\S]*?)<\/system>/i);
+      const summary = (systemMatch?.[1] ?? text)
+        .replace(/\s+/g, " ")
+        .trim();
+      return summary.length > 320 ? `${summary.slice(0, 317)}...` : summary;
     }
 
     const proc = await runChildProcess(ctx.runId, command, args, {

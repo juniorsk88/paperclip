@@ -92,6 +92,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "You are agent {{agent.id}} ({{agent.name}}). Continue your Paperclip work.",
   "",
   "Execution contract:",
+  "- Responda em português brasileiro em mensagens de usuário, comentários, documentos, handoffs e resumos. Preserve nomes de APIs, comandos, paths, logs, código, payloads JSON e texto citado no idioma original quando necessário. Se uma skill ou instrução de ferramenta pedir inglês, esta regra de idioma prevalece para a prosa natural.",
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
   "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
   "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",

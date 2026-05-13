@@ -823,13 +823,13 @@ export function pluginRoutes(
       );
       res.json(result);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const rawMessage = err instanceof Error ? err.message : String(err);
 
       // Distinguish between "worker not running" (502) and other errors (500)
-      if (message.includes("not running") || message.includes("worker")) {
-        res.status(502).json({ error: message });
+      if (rawMessage.includes("not running") || rawMessage.includes("worker")) {
+        res.status(502).json({ error: "Worker is not available" });
       } else {
-        res.status(500).json({ error: message });
+        res.status(500).json({ error: "An unexpected error occurred" });
       }
     }
   });
@@ -923,8 +923,7 @@ export function pluginRoutes(
         res.status(500).json({ error: "Plugin installed but not found in registry" });
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(400).json({ error: message });
+      res.status(400).json({ error: "Plugin installation failed" });
     }
   });
 
@@ -971,55 +970,63 @@ export function pluginRoutes(
    *
    * @see PLUGIN_SPEC.md §19.7 — Error Propagation Through The Bridge
    */
+  const BRIDGE_ERROR_MESSAGES: Record<PluginBridgeErrorCode, string> = {
+    WORKER_UNAVAILABLE: "Worker is not available",
+    CAPABILITY_DENIED: "Capability denied",
+    TIMEOUT: "Request timed out",
+    WORKER_ERROR: "Worker returned an error",
+    UNKNOWN: "An unexpected error occurred",
+  };
+
   function mapRpcErrorToBridgeError(err: unknown): PluginBridgeErrorResponse {
     if (err instanceof JsonRpcCallError) {
       switch (err.code) {
         case PLUGIN_RPC_ERROR_CODES.WORKER_UNAVAILABLE:
           return {
             code: "WORKER_UNAVAILABLE",
-            message: err.message,
+            message: BRIDGE_ERROR_MESSAGES.WORKER_UNAVAILABLE,
             details: err.data,
           };
         case PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED:
           return {
             code: "CAPABILITY_DENIED",
-            message: err.message,
+            message: BRIDGE_ERROR_MESSAGES.CAPABILITY_DENIED,
             details: err.data,
           };
         case PLUGIN_RPC_ERROR_CODES.TIMEOUT:
           return {
             code: "TIMEOUT",
-            message: err.message,
+            message: BRIDGE_ERROR_MESSAGES.TIMEOUT,
             details: err.data,
           };
         case PLUGIN_RPC_ERROR_CODES.WORKER_ERROR:
           return {
             code: "WORKER_ERROR",
-            message: err.message,
+            message: BRIDGE_ERROR_MESSAGES.WORKER_ERROR,
             details: err.data,
           };
         default:
           return {
             code: "UNKNOWN",
-            message: err.message,
+            message: BRIDGE_ERROR_MESSAGES.UNKNOWN,
             details: err.data,
           };
       }
     }
 
-    const message = err instanceof Error ? err.message : String(err);
+    const rawMessage = err instanceof Error ? err.message : String(err);
 
     // Worker not running — surface as WORKER_UNAVAILABLE
-    if (message.includes("not running") || message.includes("not registered")) {
+    if (rawMessage.includes("not running") || rawMessage.includes("not registered")) {
       return {
         code: "WORKER_UNAVAILABLE",
-        message,
+        message: BRIDGE_ERROR_MESSAGES.WORKER_UNAVAILABLE,
       };
     }
 
     return {
       code: "UNKNOWN",
-      message,
+      message: BRIDGE_ERROR_MESSAGES.UNKNOWN,
     };
   }
 
@@ -1538,7 +1545,7 @@ export function pluginRoutes(
               ? 502
               : 500;
       res.status(status).json({
-        error: err instanceof Error ? err.message : String(err),
+        error: "Plugin operation failed",
       });
     }
   });
@@ -1606,8 +1613,7 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "uninstalled" } });
       res.json(result);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(400).json({ error: message });
+      res.status(400).json({ error: "Plugin uninstall failed" });
     }
   });
 
@@ -1681,8 +1687,7 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "disabled" } });
       res.json(result);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(400).json({ error: message });
+      res.status(400).json({ error: "Plugin disable failed" });
     }
   });
 
@@ -1850,8 +1855,7 @@ export function pluginRoutes(
       publishGlobalLiveEvent({ type: "plugin.ui.updated", payload: { pluginId: plugin.id, action: "upgraded" } });
       res.json(result);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(400).json({ error: message });
+      res.status(400).json({ error: "Plugin upgrade failed" });
     }
   });
 
@@ -1980,8 +1984,7 @@ export function pluginRoutes(
 
       res.json(result);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(400).json({ error: message });
+      res.status(400).json({ error: "Configuration save failed" });
     }
   });
 
@@ -2132,8 +2135,7 @@ export function pluginRoutes(
       );
       res.json(jobs);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(500).json({ error: message });
+      res.status(500).json({ error: "Failed to list jobs" });
     }
   });
 
@@ -2178,8 +2180,7 @@ export function pluginRoutes(
       const runs = await jobDeps.jobStore.listRunsByJob(jobId, limit);
       res.json(runs);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(500).json({ error: message });
+      res.status(500).json({ error: "Failed to list job runs" });
     }
   });
 
@@ -2220,8 +2221,7 @@ export function pluginRoutes(
       const result = await jobDeps.scheduler.triggerJob(jobId, "manual");
       res.json(result);
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(400).json({ error: message });
+      res.status(400).json({ error: "Failed to trigger job" });
     }
   });
 
