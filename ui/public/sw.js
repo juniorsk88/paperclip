@@ -36,7 +36,7 @@ self.addEventListener("fetch", (event) => {
         if (request.mode === "navigate") {
           return caches.match("/") || new Response("Offline", { status: 503 });
         }
-        return caches.match(request);
+        return caches.match(request).then((cached) => cached || new Response("", { status: 504 }));
       })
   );
 });
