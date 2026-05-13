@@ -38,8 +38,13 @@ export function parseKimiOutput(stdout: string): KimiOutputEvent[] {
 
 export function isKimiUnknownSessionError(output: KimiOutputEvent[]): boolean {
   return output.some((event) => {
-    if (event.role === "error" || event.type === "error") {
-      return false;
+    if (event.type === "error" || event.role === "error") {
+      const msg = [
+        typeof event.error?.message === "string" ? event.error.message : "",
+        typeof event.message === "string" ? event.message : "",
+        typeof event.text === "string" ? event.text : "",
+      ].filter(Boolean).join("\n");
+      return /unknown.*session|session.*(not.?found|unknown|invalid|expired)/i.test(msg);
     }
     return false;
   });

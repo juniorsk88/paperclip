@@ -4,9 +4,10 @@ export const type = "kimi_local";
 export const label = "Kimi Code (local)";
 
 export const SANDBOX_INSTALL_COMMAND = "npm install -g @moonshotai/kimi-cli";
+export const DEFAULT_KIMI_LOCAL_MODEL = "kimi-code/kimi-for-coding";
 
 export const models = [
-  { id: "kimi-code/kimi-for-coding", label: "Kimi K2.6" },
+  { id: DEFAULT_KIMI_LOCAL_MODEL, label: "Kimi K2.6" },
   { id: "kimi-code/kimi-sonnet-v5", label: "Kimi Sonnet V5" },
   { id: "kimi-code/kimi-haiku-v42", label: "Kimi Haiku V4.2" },
 ];

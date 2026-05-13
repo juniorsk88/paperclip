@@ -14,46 +14,53 @@ import {
   redactEnvForLogs,
   renderTemplate,
   runChildProcess,
-  resolvePaperclipDesiredSkillNames,
-  readPaperclipRuntimeSkillEntries,
-  ensurePaperclipSkillSymlink,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+  joinPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
+import { DEFAULT_KIMI_LOCAL_MODEL } from "../index.js";
 import { parseKimiOutput, isKimiUnknownSessionError, extractSessionId, extractAssistantText, type KimiOutputEvent } from "./parse.js";
 
-async function buildPrompt(agent: AdapterExecutionContext["agent"], context: AdapterExecutionContext["context"]): Promise<string> {
-  const config = (agent.adapterConfig ?? {}) as Record<string, unknown>;
+async function buildPrompt(
+  agent: AdapterExecutionContext["agent"],
+  config: Record<string, unknown>,
+  context: AdapterExecutionContext["context"],
+): Promise<string> {
   const promptTemplate = asString(config.promptTemplate, DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE);
   const instructionsPath = asString(config.instructionsFilePath, "");
-  let instructions = "";
+  let instructionsPrefix = "";
   if (instructionsPath) {
     try {
-      const fs = await import("node:fs");
-      instructions = await fs.promises.readFile(instructionsPath, "utf-8");
+      const instructions = await fs.readFile(instructionsPath, "utf-8");
+      const instructionsDir = `${path.dirname(instructionsPath)}/`;
+      instructionsPrefix =
+        `${instructions}\n\n` +
+        `The above agent instructions were loaded from ${instructionsPath}. ` +
+        `Resolve any relative file references from ${instructionsDir}.`;
     } catch {
-      // instructions file not found
+      instructionsPrefix = `Configured instructionsFilePath ${instructionsPath}, but Paperclip could not read it.`;
     }
   }
-  return renderTemplate(promptTemplate, {
+  const renderedPrompt = renderTemplate(promptTemplate, {
     agentId: agent.id,
     companyId: agent.companyId,
     runId: context.runId,
     company: {},
-    agent: { name: agent.name },
+    agent,
     run: {},
     context: context as Record<string, unknown>,
   });
+  return joinPromptSections([instructionsPrefix, renderedPrompt]);
 }
 
-function buildArgs(config: Record<string, unknown>, sessionId: string | null, prompt: string, skillsDir?: string): { args: string[]; stdin: string } {
+function buildArgs(config: Record<string, unknown>, sessionId: string | null, prompt: string, skillsDir?: string): string[] {
   const args: string[] = [];
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
 
   args.push("--print", "--output-format", "stream-json");
-  args.push("--model", asString(config.model, "kimi-code/kimi-for-coding"));
+  args.push("--model", asString(config.model, DEFAULT_KIMI_LOCAL_MODEL));
 
   if (sessionId) {
-    args.push("--session", sessionId);
+    args.push("-r", sessionId);
   }
 
   if (dangerouslySkipPermissions) {
@@ -64,12 +71,11 @@ function buildArgs(config: Record<string, unknown>, sessionId: string | null, pr
     args.push("--skills-dir", skillsDir);
   }
 
-  args.push("--input-format", "text");
-
   const extraArgs = asStringArray(config.extraArgs);
   if (extraArgs) args.push(...extraArgs);
 
-  return { args, stdin: prompt };
+  args.push("--prompt", prompt);
+  return args;
 }
 
 function buildCwd(config: Record<string, unknown>): string {
@@ -81,10 +87,12 @@ async function buildEnv(
   agent: AdapterExecutionContext["agent"],
   config: Record<string, unknown>,
   cwd: string,
+  runId: string,
   authToken: string | undefined,
 ): Promise<Record<string, string>> {
-  const env = buildPaperclipEnv(agent);
+  const env = { ...process.env, ...buildPaperclipEnv(agent) } as Record<string, string>;
   env.PAPERCLIP_CWD = cwd;
+  env.PAPERCLIP_RUN_ID = runId;
   if (authToken) env.PAPERCLIP_API_KEY = authToken;
   const userEnv = config.env as Record<string, string> | undefined;
   if (userEnv) {
@@ -92,13 +100,11 @@ async function buildEnv(
       if (typeof value === "string") env[key] = value;
     }
   }
-  env.PATH = `${os.homedir()}/.local/bin:/usr/local/bin:/usr/bin:/bin`;
+  env.PATH = ensurePathInEnv(env).PATH ?? `${os.homedir()}/.local/bin:/usr/local/bin:/usr/bin:/bin`;
   return env;
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-  console.error("[kimi-debug] execute called", JSON.stringify({ agent: ctx.agent?.id, runId: ctx.runId }).slice(0, 200));
-  try {
   const { agent, runtime, config, context, onLog, onMeta } = ctx;
   const cwd = buildCwd(config);
   const command = asString(config.command, "kimi");
@@ -111,14 +117,14 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const canResumeSession = runtimeSessionId.length > 0 && (runtimeSessionCwd.length === 0 || runtimeSessionCwd === cwd);
   const sessionId = canResumeSession ? runtimeSessionId : null;
 
-  const env = await buildEnv(agent, config, cwd, ctx.authToken);
-  const prompt = await buildPrompt(agent, context);
+  const env = await buildEnv(agent, config, cwd, ctx.runId, ctx.authToken);
+  const prompt = await buildPrompt(agent, config, context);
 
   const skillsHome = path.join(os.homedir(), ".kimi", "skills", "paperclip");
   const skillsDir = await fs.stat(skillsHome).then(() => skillsHome).catch(() => undefined);
 
   async function runAttempt(sid: string | null): Promise<{ proc: Awaited<ReturnType<typeof runChildProcess>>; output: KimiOutputEvent[] }> {
-    const { args, stdin } = buildArgs(config, sid, prompt, skillsDir);
+    const args = buildArgs(config, sid, prompt, skillsDir);
     const graceSec = asNumber(config.graceSec, 15);
     const timeoutSec = asNumber(config.timeoutSec, 0);
 
@@ -126,9 +132,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const meta: AdapterInvocationMeta = {
         adapterType: "kimi_local",
         command,
-        commandArgs: args,
+        commandArgs: args.map((value, index) => (
+          index > 0 && args[index - 1] === "--prompt" ? `<prompt ${prompt.length} chars>` : value
+        )),
         cwd,
         env: redactEnvForLogs(env),
+        prompt,
       };
       await onMeta(meta);
     }
@@ -190,7 +199,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     const proc = await runChildProcess(ctx.runId, command, args, {
       cwd,
       env,
-      stdin,
       timeoutSec: timeoutSec > 0 ? timeoutSec : 600,
       graceSec,
       onLog: kimiOnLog,
@@ -204,32 +212,42 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   if (sessionId && !proc.timedOut && (proc.exitCode !== 0 || isKimiUnknownSessionError(output))) {
     const retry = await runAttempt(null);
-    return toResult(retry, { clearSessionOnMissingSession: true });
+    return toResult(retry, { clearSessionOnMissingSession: true, cwd, model: asString(config.model, DEFAULT_KIMI_LOCAL_MODEL) });
   }
 
-  return toResult({ proc, output }, { sessionId, cwd });
-  } catch (err) {
-    console.error("[kimi-debug] execute failed", err);
-    throw err;
-  }
+  return toResult({ proc, output }, { sessionId, cwd, model: asString(config.model, DEFAULT_KIMI_LOCAL_MODEL) });
 }
 
 function toResult(
   { proc, output }: { proc: Awaited<ReturnType<typeof runChildProcess>>; output: KimiOutputEvent[] },
-  opts: { sessionId?: string | null; cwd?: string; clearSessionOnMissingSession?: boolean } = {},
+  opts: { sessionId?: string | null; cwd?: string; model?: string; clearSessionOnMissingSession?: boolean } = {},
 ): AdapterExecutionResult {
-  const lastAssistant = output.filter((e) => e.role === "assistant").pop();
   const errorEvents = output.filter((e) => e.type === "error");
+  const resolvedSessionId = extractSessionId(output) ?? opts.sessionId ?? null;
+  const failed = (proc.exitCode ?? 0) !== 0;
+  const errorMessage = errorEvents
+    .map((e) => (
+      typeof e.error?.message === "string" ? e.error.message :
+      typeof e.message === "string" ? e.message :
+      typeof e.text === "string" ? e.text :
+      ""
+    ))
+    .filter(Boolean)
+    .join("\n") || (failed ? firstNonEmptyLine(proc.stderr) || `Kimi exited with code ${proc.exitCode ?? -1}` : null);
 
   const result: AdapterExecutionResult = {
     exitCode: proc.exitCode,
     signal: proc.signal,
     timedOut: proc.timedOut,
-    errorMessage: errorEvents.map((e) => typeof e.message === "string" ? e.message : "").filter(Boolean).join("\n") || undefined,
+    errorMessage,
     usage: undefined,
-    sessionId: opts.sessionId ?? undefined,
-    sessionParams: opts.sessionId ? { sessionId: opts.sessionId, cwd: opts.cwd } : null,
-    summary: lastAssistant?.text ?? undefined,
+    sessionId: resolvedSessionId ?? undefined,
+    sessionParams: resolvedSessionId ? { sessionId: resolvedSessionId, cwd: opts.cwd } : null,
+    sessionDisplayId: resolvedSessionId ?? undefined,
+    provider: "moonshot",
+    biller: "moonshot",
+    model: opts.model ?? DEFAULT_KIMI_LOCAL_MODEL,
+    summary: extractAssistantText(output) || undefined,
     resultJson: {
       stdout: proc.stdout,
       stderr: proc.stderr,
@@ -241,4 +259,8 @@ function toResult(
   }
 
   return result;
+}
+
+function firstNonEmptyLine(value: string): string | null {
+  return value.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null;
 }
