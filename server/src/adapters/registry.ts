@@ -100,6 +100,19 @@ import {
   listPiModels,
 } from "@paperclipai/adapter-pi-local/server";
 import {
+  execute as kimiExecute,
+  testEnvironment as kimiTestEnvironment,
+  sessionCodec as kimiSessionCodec,
+  listKimiSkills,
+  syncKimiSkills,
+} from "@paperclipai/adapter-kimi-local/server";
+import {
+  type as kimiType,
+  agentConfigurationDoc as kimiAgentConfigurationDoc,
+  models as kimiModels,
+  modelProfiles as kimiModelProfiles,
+} from "@paperclipai/adapter-kimi-local";
+import {
   agentConfigurationDoc as piAgentConfigurationDoc,
   modelProfiles as piModelProfiles,
 } from "@paperclipai/adapter-pi-local";
@@ -353,6 +366,25 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: openCodeAgentConfigurationDoc,
 };
 
+const kimiLocalAdapter: ServerAdapterModule = {
+  type: kimiType,
+  execute: kimiExecute,
+  testEnvironment: kimiTestEnvironment,
+  sessionCodec: kimiSessionCodec,
+  sessionManagement: getAdapterSessionManagement("kimi_local") ?? undefined,
+  listSkills: listKimiSkills,
+  syncSkills: syncKimiSkills,
+  models: kimiModels,
+  modelProfiles: kimiModelProfiles,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  getRuntimeCommandSpec: (config) =>
+    buildNpmRuntimeCommandSpec(config, "kimi", "@moonshotai/kimi-cli"),
+  agentConfigurationDoc: kimiAgentConfigurationDoc,
+};
+
 const piLocalAdapter: ServerAdapterModule = {
   type: "pi_local",
   execute: piExecute,
@@ -461,6 +493,7 @@ function registerBuiltInAdapters() {
     geminiLocalAdapter,
     openclawGatewayAdapter,
     hermesLocalAdapter,
+    kimiLocalAdapter,
     processAdapter,
     httpAdapter,
   ]) {
