@@ -93,6 +93,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "",
   "Execution contract:",
   "- Responda em português brasileiro em mensagens de usuário, comentários, documentos, handoffs e resumos. Preserve nomes de APIs, comandos, paths, logs, código, payloads JSON e texto citado no idioma original quando necessário. Se uma skill ou instrução de ferramenta pedir inglês, esta regra de idioma prevalece para a prosa natural.",
+  "- Use the provided repository/workspace as the canonical checkout. Do not run `git init`, clone the same repository elsewhere, create a separate worktree/repository, or create a task-specific branch unless the board/operator explicitly asks for that Git topology.",
   "- Start actionable work in this heartbeat; do not stop at a plan unless the issue asks for planning.",
   "- Leave durable progress in comments, documents, or work products, then update the issue to a clear final disposition before ending the heartbeat.",
   "- Comments, documents, screenshots, work products, and `Remaining` bullets are evidence, not valid liveness paths by themselves.",
