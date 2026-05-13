@@ -133,13 +133,67 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       await onMeta(meta);
     }
 
+    const kimiOnLog = (kind: "stdout" | "stderr", line: string): Promise<void> => {
+      const trimmed = line.trim();
+      if (!trimmed) return Promise.resolve();
+      if (kind === "stdout") {
+        const parsed = parseSingleKimiEvent(trimmed);
+        if (parsed) {
+          if (parsed.kind === "thinking") return onLog("stdout", `💭 ${parsed.text ?? ""}`);
+          if (parsed.kind === "assistant") return onLog("stdout", parsed.text ?? "");
+          if (parsed.kind === "tool_call") {
+            onLog("stdout", `🛠 ${parsed.name ?? ""}`);
+            return onLog("stdout", JSON.stringify(parsed.input));
+          }
+          if (parsed.kind === "tool_result") {
+            return onLog("stdout", parsed.text ? `📋 ${parsed.text.slice(0, 200)}` : "");
+          }
+          if (parsed.kind === "stderr") return onLog("stderr", parsed.text ?? "");
+          if (parsed.kind === "init") return Promise.resolve();
+          if (parsed.kind === "result") return Promise.resolve();
+          return onLog("stdout", trimmed);
+        }
+      }
+      return onLog(kind, trimmed);
+    };
+
+    function parseSingleKimiEvent(raw: string): { kind: string; text?: string; name?: string; input?: unknown } | null {
+      try {
+        const event = JSON.parse(raw);
+        if (event.type === "init") return { kind: "init" };
+        if (event.type === "result") return { kind: "result" };
+        if (event.type === "error") return { kind: "stderr", text: event.error?.message ?? event.text ?? raw };
+        if (event.role === "assistant") {
+          const thinkText = event.content?.filter((c: { type: string }) => c.type === "think").map((c: { think?: string }) => c.think ?? "").join("");
+          const asstText = event.content?.filter((c: { type: string }) => c.type === "text").map((c: { text?: string }) => c.text ?? "").join("");
+          if (thinkText) return { kind: "thinking", text: thinkText };
+          if (asstText) return { kind: "assistant", text: asstText };
+          if (Array.isArray(event.tool_calls) && event.tool_calls.length > 0) {
+            const tc = event.tool_calls[0];
+            let input: unknown = {};
+            try { input = tc.function?.arguments ? JSON.parse(tc.function.arguments) : {}; } catch {}
+            return { kind: "tool_call", name: tc.function?.name ?? tc.type ?? "unknown", input };
+          }
+        }
+        if (event.role === "tool") {
+          const text = Array.isArray(event.content)
+            ? event.content.map((c: { text?: string }) => c.text ?? "").join("")
+            : typeof event.content === "string" ? event.content : "";
+          return { kind: "tool_result", text };
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    }
+
     const proc = await runChildProcess(ctx.runId, command, args, {
       cwd,
       env,
       stdin,
       timeoutSec: timeoutSec > 0 ? timeoutSec : 600,
       graceSec,
-      onLog,
+      onLog: kimiOnLog,
     });
 
     const output = parseKimiOutput(proc.stdout);
